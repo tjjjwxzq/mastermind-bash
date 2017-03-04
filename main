@@ -1,0 +1,409 @@
+#! /usr/bin/env bash
+
+#************
+# UTILITIES
+#************
+# Get line with max length
+max_line () {
+  local max=0
+  # for some reason, read doesn't split on herestrings,
+  # so I don't have to worry about leading and trailing whitespaces
+  # getting stripped
+  while IFS= read -r line; do
+    if [[ ${#line} > $max ]]; then
+      max=${#line}
+    fi
+  done <<< "$1"
+  echo "$max"
+}
+
+#*****************
+# CENTERED OUTPUT
+#*****************
+# Centered print
+cprint () {
+  local startindex=1
+  if [[ $1 = "-b" ]]; then
+    tput bold
+    startindex=2 # should be 2, since 0th element is the script path
+  fi
+
+  # the quotes around ${@:$startindex} are important to ensure that no
+  # word splitting is applied to the arguments (ie. if an argument with spaces
+  # is passed in, like "Hello World", it won't be split into 2 separate args)
+  for text in "${@:$startindex}"; do
+    local input_length=$(max_line "$text")
+    while IFS= read -r line; do
+      # cursor must be set for every line of output
+      local midcol=$(( ($(tput cols) - $input_length) / 2))
+      (( midcol > 0 )) && midcol=$midcol || midcol=0
+      tput cup $(tput lines) $midcol
+      echo "$line"
+    done <<< "$text"
+  done
+  tput sgr0
+  tput cup $(tput lines) 0
+}
+
+# Centered select
+cselect () {
+  local __retvar=$1
+  local prompt=$2
+  local options=("${@:3}")
+
+  # Remember to use ${#options[@]} to get the array length
+  # since ${options[@]} expands the array out to all its elements
+  # Just ${#options} erroneously gets the length of the first element
+  for (( i=0; i<${#options[@]}; ++i )); do
+    cprint "$((i+1))) ${options[$i]}"
+  done
+
+  tput cup $(tput lines) $(( ($(tput cols) - ${#prompt}) /2 ))
+  read -p "$prompt " opt
+
+  # OLD COMMENTS WHEN USING RETURN
+  # but this doesn't work if user inputs a non-digit
+  # Parameter expansion to set default value
+  # we can't have opt be empty since we must return an integer
+  # opt=${opt:=0}
+
+  # since we are returning a number, and we need this function
+  # to print to stdout, use return to return an exit status, because we
+  # can't use echo and command substitution
+  # return "$opt"
+
+  eval $__retvar=$opt
+}
+
+#*************
+# GAME SETUP
+#*************
+
+# source logos
+. $(dirname $( ls -l ${BASH_SOURCE[0]} | cut -d " " -f 12 ))"/logos"
+
+# Choose logo
+get_logo () {
+  local bigsize=$(sort -n <<< "$(max_line "$big")"$'\n'"$(max_line "$shadow")" | tail -1)
+  if (( $(tput cols) < bigsize )); then
+    echo "$small"
+  else
+    local index=$(( $RANDOM % 2 ))
+    case $index in
+      0)
+        echo "$big"
+        ;;
+      1)
+        echo "$shadow"
+        ;;
+      *)
+        ;;
+    esac
+  fi
+}
+
+# Main menu
+main_menu () {
+  cprint -b "WELCOME TO"
+  local logo=$(get_logo)
+  cprint "$logo"
+  echo ""
+
+  while true; do
+    local opt
+    cselect opt "What would you like to do?" "Play" "Quit"
+    case $opt in
+      1)
+        cprint -b "Let's go!"
+        break
+        ;;
+      2)
+        cprint -b "Goodbye!"
+        exit
+        ;;
+      *)
+        ;;
+    esac
+  done
+
+  echo ""
+}
+
+# Set repeats or no
+set_repeats () {
+  # pass in a variable to set as the return value, since we can't use
+  # echo and command substitution
+  local __retvar=$1
+  local repeats
+
+  while true; do
+    local opt
+    cselect opt "Choose whether you want to enable repeated pegs:" "Repeats" "No Repeats"
+    case $opt in
+      1)
+        cprint -b "Repeats enabled!"
+        repeats=true
+        break
+        ;;
+      2)
+        cprint -b "Repeats disabled!"
+        repeats=false
+        break
+        ;;
+      *)
+        ;;
+    esac
+  done
+  echo ""
+  eval $__retvar=$repeats
+}
+
+# Set number of pegs
+set_pegs () {
+  # pass in a variable to set as the return value, since we can't use
+  # echo and command substitution
+  local __retvar=$1
+  local pegs=""
+  local options=(4 5 6 7 8)
+  local count=0
+
+  while true; do
+    local opt
+    cselect opt "Choose the number of different pegs:" ${options[@]}
+    case $opt in
+      [1-8])
+        cprint -b "Secret code will be randomly generated from ${options[$opt-1]} different pegs!"
+        for c in {A..Z}; do
+          pegs=$pegs$c
+          ((count++))
+          if [[ $count -ge ${options[$opt-1]} ]]; then
+            break
+          fi
+        done
+        break
+        ;;
+      *)
+        ;;
+    esac
+  done
+  echo ""
+  eval $__retvar=$pegs
+}
+
+# the & in the sed regex refers to the portion
+# of the pattern which matched
+# This can be only used to generate a random string
+# with one of each letter
+get_code_no_repeats () {
+  local pegs=$1
+  echo $pegs | sed "s/./&\n/g" | shuf | tr -d "\n"
+}
+
+# Generate random 4 letter string from set ABCDEFG
+# possibly with repeated letters
+get_code_with_repeats () {
+  local pegs=$1
+  local code=""
+  for (( i=0; i<4; ++i )); do
+    index=$(($RANDOM % ${#pegs}))
+    code=$code${pegs:index:1}
+  done
+  echo $code
+}
+
+initialize () {
+  local repeats=$1
+  local pegs=$2
+  local code
+  if [[ $repeats = true ]]; then
+    code=$(get_code_with_repeats $pegs)
+  else
+    code=$(get_code_no_repeats $pegs)
+  fi
+  echo ${code:0:4}
+}
+
+#**********************
+# PEG AND BOARD OUTPUT
+#**********************
+
+format_pegs () {
+  local pegs=$1
+  local res=$(sed "s/./&, /g" <<< $pegs)
+  echo ${res::-2}
+}
+
+format_board_row () {
+  local row=$1
+  local res=$(sed "s/./& /g" <<< $row)
+  echo "$res"
+}
+
+print_board () {
+  # be careful when passing an array argument
+  # ensure to dereference/destructure it on assignment
+  # if array is passed in as several positional arguments,
+  # use board=("$@")
+  local board=($1)
+
+  local numempty=$(( 7 - ${#board[@]}/2 ))
+
+  if (( numempty > 0 )); then
+    # Print empty slots
+    for (( i=0; i<$numempty; ++i )); do
+      # we must use the char \x0 instead of just \0 for sed, as opposed to tr (?)
+      cprint "$(head -c 4 /dev/zero | sed "s/\x0/_ /g")| $(head -c 4 /dev/zero | sed "s/\x0/_ /g")"
+    done
+  fi
+
+  # note that we must use single-quotes with the $ sign
+  # to have \n decoded as newlines
+  local numfilled=$(sort -n <<< $'7\n'"$(( ${#board[@]}/2 ))" | head -n 1)
+
+  if (( numfilled > 0 )); then
+    # Print filled slots
+    for (( i=${#board[@]} - 1; i>${#board[@]} - $numfilled * 2; i-=2)); do
+      cprint "$(format_board_row ${board[i-1]})| $(format_board_row ${board[i]})"
+    done
+  fi
+}
+
+#******************
+# CHECKING INPUTS
+#******************
+check_input () {
+  local code=$1
+  local guess=$2
+
+  local blacks=0 # num blacks
+  local whites=0 # num whites
+  local bhits="" # track black indices hit
+  local whits="" # track white indices hit
+
+  # Since brace expansion is done before variable
+  # expansion, we cannot use variables in ranges eg.
+  # {$a..$b} is not possible
+  for (( i=0; i<4; ++i )); do
+    if [[ ${guess:$i:1} = ${code:$i:1} ]]; then
+      ((blacks++))
+      bhits=$bhits$i
+      if [[ $whits =~ $i ]]; then
+        ((whites--))
+      fi
+    else
+      for (( j=0; j<4; ++j )); do
+        if [[ ${guess:$i:1} = ${code:$j:1} && ( ! "$whits$bhits" =~ $j ) ]]; then
+          ((whites++))
+          whits=$whits$j
+          break
+        fi
+      done
+    fi
+  done
+
+  echo $blacks $whites
+}
+
+# Check if player has won
+check_win () {
+  blacks=$1
+  if (( blacks == 4 )); then
+    echo true
+  else
+    echo false
+  fi
+}
+
+play_again () {
+  while true; do
+    local opt
+    cselect opt "Would you like to play again?" "Play" "Quit"
+    case $opt in
+      1)
+        cprint -b "Let's go!"
+        break
+        ;;
+      2)
+        cprint -b "Goodbye!"
+        exit
+        ;;
+      *)
+        ;;
+    esac
+  done
+
+  echo ""
+  break # break from play loop
+}
+
+# Output visual representation of blacks(X) and whites(O)
+output_score () {
+  blacks=$1
+  whites=$2
+  remainder=$(( 4 - blacks - whites ))
+
+  # /dev/zero is a special file that gives as many
+  # nullbytes as one reads from it.
+  # -c tells head to print the first NUM bytes from
+  # the file
+  output=$(head -c $blacks < /dev/zero | tr "\0" "X")$(head -c $whites < /dev/zero | tr "\0" "O")$(head -c $remainder < /dev/zero | tr "\0" "_")
+  echo "$output"
+}
+
+#*******
+# PLAY
+#*******
+
+play () {
+  local pegs=$1
+  local code=$2
+  local board
+  while true; do
+    cprint -b "Place your pegs: "
+    # Be careful when passing an array argument
+    # make sure to pass it in as a single positional argument
+    # and destructure appropriately in the called function
+    # or pass it as several positional arguments, ie. "${board[@]}"
+    # and destructure appropriately in the called function
+    print_board "${board[*]}"
+
+    tput cup $(tput lines) $(( ($(tput cols) - 4) / 2 - 1))
+    read guess
+    if [[ -z $guess ]]
+    then
+      cprint "Please place 4 pegs $(format_pegs $pegs) wtihout any spaces!"
+      continue
+    # Note that you should not use quotes for the regex
+    # else it will be treated as a string literal
+    elif [[ $guess =~ [^$pegs] || ${#guess} -ne 4 ]]
+    then
+      cprint "Please input 4 valid pegs $(format_pegs $pegs) separated by a space!"
+    else
+      read blacks whites < <(check_input $code $guess)
+
+      # Check win condition
+      win=$(check_win $blacks)
+      if [[ $win = true ]]; then
+        cprint -b "Congratulations, you won!"
+        echo ""
+        play_again
+      fi
+
+      # Otherwise output the score
+      local score=$(output_score $blacks $whites)
+      # append to array
+      board+=($guess $score)
+    fi
+  done
+}
+
+#******
+# MAIN
+#******
+main_menu
+while true; do
+  set_repeats REPEATS
+  set_pegs PEGS
+  CODE=$(initialize $REPEATS $PEGS)
+  play $PEGS $CODE
+done
