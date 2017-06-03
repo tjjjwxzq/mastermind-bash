@@ -80,7 +80,9 @@ cselect () {
 #*************
 
 # source logos
-. $(dirname $( ls -l ${BASH_SOURCE[0]} | cut -d " " -f 12 ))"/logos"
+# d'oh, don't do this, use readlink instead
+# . $(dirname $( ls -l ${BASH_SOURCE[0]} | cut -d " " -f 12 ))"/logos"
+. $(dirname $(readlink -f ${BASH_SOURCE[0]}))"/logos"
 
 # Choose logo
 get_logo () {
@@ -377,7 +379,7 @@ play () {
     # else it will be treated as a string literal
     elif [[ $guess =~ [^$pegs] || ${#guess} -ne 4 ]]
     then
-      cprint "Please input 4 valid pegs $(format_pegs $pegs) separated by a space!"
+      cprint "Please input 4 valid pegs $(format_pegs $pegs)!"
     else
       read blacks whites < <(check_input $code $guess)
 
